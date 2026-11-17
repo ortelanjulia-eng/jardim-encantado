@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Fada Doce em Fuga</title>
+<style>
+  /* ---------- CORES E GLITTER (CSS) ---------- */
+  html, body { margin: 0; height: 100%; display: flex; justify-content: center; align-items: center;
+    overflow: hidden; touch-action: none;
+    background: radial-gradient(circle at 50% 40%, #2e5d2a, #12291a); }
+
+  /* Área do jogo: formato 16:9 que se ajusta a qualquer tela */
+  #area { position: relative; width: min(100vw, calc(100vh * 16 / 9)); aspect-ratio: 16 / 9;
+    border-radius: 12px; overflow: hidden; box-shadow: 0 0 25px #ff7ad9aa; }
+  canvas { width: 100%; height: 100%; display: block; }
+
+  /* Tela de início e de fim (fica por cima do jogo) */
+  #tela { position: absolute; inset: 0; box-sizing: border-box; padding: 3%;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 2.5%; text-align: center; color: #fff; font-family: Georgia, serif;
+    font-size: clamp(11px, min(2.2vw, 3.8vh), 22px);
+    background: linear-gradient(160deg, #4b1f6fdd, #1d5a3add); }
+  #tela p { margin: 0; max-width: 85%; line-height: 1.35; }
+  #dica { color: #ffe66d; }
+
+  /* Título com brilho colorido que se move */
+  #titulo { margin: 0; font-size: 2.4em;
+    background: linear-gradient(90deg, #ff7ad9, #ffe66d, #7af0ff, #c77dff, #ff7ad9);
+    background-size: 300% 100%; -webkit-background-clip: text; background-clip: text;
+    color: transparent; animation: brilho 4s linear infinite; }
+  @keyframes brilho { to { background-position: 300% 0; } }
+
+  /* Glitter: pontinhos de luz que piscam no fundo */
+  #tela::before { content: ""; position: absolute; inset: 0; pointer-events: none;
+    background-image:
+      radial-gradient(2px 2px at 20px 30px, #fff, transparent),
+      radial-gradient(2px 2px at 80px 120px, #ffe66d, transparent),
+      radial-gradient(3px 3px at 140px 60px, #fff, transparent),
+      radial-gradient(2px 2px at 200px 150px, #ff9ae8, transparent);
+    background-size: 220px 180px; animation: pisca 1.4s ease-in-out infinite alternate; }
+  @keyframes pisca { from { opacity: .2; } to { opacity: 1; } }
+
+  /* Botão cor-de-rosa brilhante */
+  button { position: relative; font-size: 1.4em; font-weight: bold; padding: .5em 1.6em;
+    border: 0; border-radius: 999px; color: #4b1f6f; cursor: pointer;
+    background: linear-gradient(90deg, #ffb3ec, #fff2a8, #b3f3ff, #ffb3ec);
+    background-size: 300% 100%; animation: brilho 3s linear infinite;
+    box-shadow: 0 0 18px #ff7ad9; }
+</style>
+</head>
+<body>
+<div id="area">
+  <canvas id="c"></canvas>
+  <div id="tela">
+    <h1 id="titulo">Fada Doce em Fuga</h1>
+    <p id="texto">Na Floresta Encantada, a fada <b>Lia</b> precisa juntar doces mágicos para a festa das fadas.
+      Mas o elfo <b>Gruni</b>, guloso e travesso, quer todos os doces... e quer pegar a Lia também!</p>
+    <p id="dica">Setas do teclado ou arraste o dedo para voar. Cada doce empurra o elfo para longe!</p>
+    <button id="botao">Jogar</button>
+  </div>
+</div>
+
+<script>
+// ---------- Preparação ----------
+const c = document.getElementById('c');
+const g = c.getContext('2d');            // "g" é o pincel que desenha na tela
+const W = 640, H = 360;                  // tamanho interno do jogo
+c.width = W; c.height = H;
+const CHAO = H - 50;                     // altura do chão
+const CORES_DOCES = ['#ff5fa8', '#43d9ff', '#b36bff', '#ffd23f'];
+
+let fada, elfo, doces, brilhos, pontos, vidas, jogando;
+let tempo, vel, contador, anterior, fundoX, tremor, imune;
+const teclas = {};                       // guarda quais setas estão apertadas
+let alvo = null;                         // posição do dedo (quando está tocando)
+
+// ---------- Zera tudo para uma partida nova ----------
+function zerarDados() {
+  fada = { x: 260, y: 150 };
+  elfo = { x: 30, y: 150, vel: 0.25, passo: 0 };   // vel = velocidade do elfo, passo = animação das pernas
+  doces = [];        // lista de doces na tela
+  brilhos = [];      // lista de faíscas (glitter)
+  pontos = 0; vidas = 3; vel = 3;
+  contador = 0; tempo = 0; fundoX = 0; tremor = 0; imune = 0;
+}
+
+function iniciar() {
+  zerarDados();
+  jogando = true;
+  anterior = performance.now();
+  document.getElementById('tela').style.display = 'none';
+  requestAnimationFrame(loop);
+}
+
+function fimDeJogo() {
+  jogando = false;
+  document.getElementById('titulo').textContent = 'O elfo te pegou!';
+  document.getElementById('texto').textContent = 'A Lia juntou ' + pontos + ' doces. Tente de novo!';
+  document.getElementById('dica').textContent = '';
+  document.getElementById('botao').textContent = 'Recomeçar';
+  document.getElementById('tela').style.display = 'flex';
+}
+
+// ---------- Controles ----------
+addEventListener('keydown', e => teclas[e.key] = true);
+addEventListener('keyup',   e => teclas[e.key] = false);
+
+// Toque ou mouse: a fada vai até o dedo
+let arrastando = false;
+function seguirDedo(e) {
+  if (!arrastando) return;
+  const r = c.getBoundingClientRect();
+  alvo = { x: (e.clientX - r.left) / r.width * W,
+           y: (e.clientY - r.top) / r.height * H - 30 };   // um pouco acima do dedo, para enxergar a fada
+}
+c.addEventListener('pointerdown', e => { arrastando = true; seguirDedo(e); });
+addEventListener('pointermove', seguirDedo);
+addEventListener('pointerup', () => { arrastando = false; alvo = null; });
+document.getElementById('botao').addEventListener('click', iniciar);
+
+// ---------- Faíscas de glitter ----------
+function criarBrilho(x, y, vx, vy) {
+  const cores = ['#fff', '#ffe66d', '#ff9ae8', '#7af0ff'];
+  brilhos.push({ x, y, vx, vy, vida: 30, cor: cores[Math.floor(Math.random() * 4)] });
+}
+
+// ---------- Lógica do jogo ----------
+function atualizar(f) {      // f = quantos "quadros" passaram (velocidade igual em qualquer aparelho)
+  tempo += f;
+  vel = Math.min(3 + pontos * 0.08, 7);   // o jogo acelera aos poucos
+  fundoX += vel * f;                      // faz a floresta passar
+  if (tremor > 0) tremor -= f;
+  if (imune > 0) imune -= f;
+
+  // move a fada com as setas
+  const v = 4.5 * f;
+  if (teclas['ArrowLeft'])  fada.x -= v;
+  if (teclas['ArrowRight']) fada.x += v;
+  if (teclas['ArrowUp'])    fada.y -= v;
+  if (teclas['ArrowDown'])  fada.y += v;
+  // ou com o dedo
+  if (alvo) { fada.x += (alvo.x - fada.x) * 0.2 * f; fada.y += (alvo.y - fada.y) * 0.2 * f; }
+  // não deixa a fada sair da tela
+  fada.x = Math.max(20, Math.min(W - 20, fada.x));
+  fada.y = Math.max(40, Math.min(CHAO - 15, fada.y));
+
+  // o elfo corre atrás: chega cada vez mais perto e segue a altura da fada
+  // quanto mais doces a Lia pega, mais rápido o elfo anda (máximo 0.9)
+  elfo.vel = Math.min(0.25 + pontos * 0.02, 0.9);
+  elfo.x += elfo.vel * f;
+  elfo.y += (fada.y - elfo.y) * 0.03 * f;
+  elfo.passo += (0.2 + elfo.vel * 0.5) * f;   // as pernas mexem mais rápido junto com o elfo
+
+  // rastro de glitter atrás da fada
+  if (Math.random() < 0.7) criarBrilho(fada.x - 10, fada.y + Math.random() * 12, -vel * 0.6 - Math.random(), Math.random() - 0.5);
+  for (let i = brilhos.length - 1; i >= 0; i--) {
+    const b = brilhos[i];
+    b.x += b.vx * f; b.y += b.vy * f; b.vida -= f;
+    if (b.vida <= 0) brilhos.splice(i, 1);
+  }
+
+  // cria um doce novo a cada ~55 quadros
+  contador += f;
+  if (contador > 55) {
+    contador = 0;
+    doces.push({ x: W + 20, y: 50 + Math.random() * (CHAO - 90),
+                 cor: CORES_DOCES[Math.floor(Math.random() * CORES_DOCES.length)] });
+  }
+
+  // move os doces e vê se a fada pegou
+  for (let i = doces.length - 1; i >= 0; i--) {
+    const d = doces[i];
+    d.x -= vel * f;
+    if (Math.hypot(d.x - fada.x, d.y - fada.y) < 28) {      // pegou o doce!
+      pontos++;
+      elfo.x = Math.max(30, elfo.x - 25);                   // o elfo fica para trás
+      for (let k = 0; k < 12; k++) {                        // explosão de glitter
+        const ang = Math.random() * 6.28;
+        criarBrilho(d.x, d.y, Math.cos(ang) * 3, Math.sin(ang) * 3);
+      }
+      doces.splice(i, 1);
+    } else if (d.x < -20) {                                 // deixou o doce passar: o elfo se aproxima
+      elfo.x += 12;
+      doces.splice(i, 1);
+    }
+  }
+
+  // o elfo encostou na fada?
+  if (imune <= 0 && Math.hypot(elfo.x - fada.x, elfo.y - fada.y) < 36) {
+    vidas--;
+    tremor = 15;                      // a tela treme
+    imune = 90;                       // a fada pisca e fica protegida por um instante
+    elfo.x = 30;                      // o elfo volta para trás
+    fada.x = Math.max(fada.x, 200);
+    if (vidas <= 0) fimDeJogo();
+  }
+}
+
+// ---------- Desenho do cenário ----------
+// Desenha uma fileira de troncos que passa na tela (fator = velocidade da camada)
+function camadaTroncos(fator, espaco, largura, cor) {
+  const base = Math.floor(fundoX * fator / espaco);
+  const desloc = (fundoX * fator) % espaco;
+  for (let k = -1; k <= W / espaco + 1; k++) {
+    const i = base + k;
+    const x = k * espaco - desloc;
+    const lg = largura * (0.8 + ((i * 37) % 5) / 10);       // cada tronco com largura diferente
+    g.fillStyle = cor;                g.fillRect(x, 0, lg, CHAO);
+    g.fillStyle = 'rgba(0,0,0,.15)';  g.fillRect(x + lg * 0.7, 0, lg * 0.3, CHAO);   // sombra
+  }
+}
+
+function desenharFundo() {
+  // céu da floresta: verde-amarelado claro
+  const gr = g.createLinearGradient(0, 0, 0, H);
+  gr.addColorStop(0, '#e3f2a0'); gr.addColorStop(1, '#86bd4f');
+  g.fillStyle = gr; g.fillRect(0, 0, W, H);
+
+  camadaTroncos(0.3, 110, 26, '#b59a5a');   // troncos longe (devagar)
+  camadaTroncos(1.0, 230, 46, '#7a5a28');   // troncos perto (rápido)
+
+  // folhas no teto
+  const off = (fundoX * 0.6) % 70;
+  g.fillStyle = '#3f8a2f';
+  for (let x = -off - 70; x < W + 70; x += 70) { g.beginPath(); g.arc(x, 0, 42, 0, 7); g.fill(); }
+
+  // chão de grama
+  g.fillStyle = '#4a9a2a'; g.fillRect(0, CHAO, W, H - CHAO);
+  g.fillStyle = '#2f6f1d'; g.fillRect(0, CHAO, W, 6);
+
+  // cogumelos no chão
+  const offC = fundoX % 200;
+  for (let x = -offC; x < W + 200; x += 200) {
+    g.fillStyle = '#f4efe0'; g.fillRect(x + 6, CHAO + 10, 8, 14);          // pé
+    g.fillStyle = '#e0392b'; g.beginPath(); g.arc(x + 10, CHAO + 11, 12, Math.PI, 0); g.fill();   // chapéu
+    g.fillStyle = '#fff'; g.fillRect(x + 4, CHAO + 4, 4, 4); g.fillRect(x + 12, CHAO + 2, 4, 4);  // bolinhas
+  }
+}
+
+function desenharDoce(d) {
+  const y = d.y + Math.sin(tempo * 0.1 + d.x * 0.05) * 4;   // o doce balança de leve
+  g.fillStyle = d.cor;
+  g.beginPath(); g.arc(d.x, y, 9, 0, 7); g.fill();                                                  // bala
+  g.beginPath(); g.moveTo(d.x - 8, y); g.lineTo(d.x - 18, y - 7); g.lineTo(d.x - 18, y + 7); g.fill(); // papel esquerdo
+  g.beginPath(); g.moveTo(d.x + 8, y); g.lineTo(d.x + 18, y - 7); g.lineTo(d.x + 18, y + 7); g.fill(); // papel direito
+  g.fillStyle = '#fff'; g.fillRect(d.x - 4, y - 5, 3, 3);                                           // brilhinho
+}
+
+function desenharBrilhos() {
+  for (const b of brilhos) {
+    g.globalAlpha = Math.max(b.vida / 30, 0);
+    g.fillStyle = b.cor;
+    g.fillRect(b.x - 1, b.y - 3, 2, 6);   // faísca em forma de cruz
+    g.fillRect(b.x - 3, b.y - 1, 6, 2);
+  }
+  g.globalAlpha = 1;
+}
+
+// ---------- Personagens ----------
+function desenharFada(x, y) {
+  if (imune > 0 && Math.floor(tempo / 5) % 2 === 0) return;   // pisca depois de ser pega
+  const bat = Math.sin(tempo * 0.5) * 0.4;                     // bater de asas
+  g.fillStyle = 'rgba(200,240,255,.8)';
+  for (const lado of [-1, 1]) {                                // duas asas
+    g.save(); g.translate(x - 3, y - 4); g.rotate(lado * (0.6 + bat));
+    g.beginPath(); g.ellipse(0, -12, 7, 15, 0, 0, 7); g.fill(); g.restore();
+  }
+  g.fillStyle = '#ff5fa8';                                     // vestido
+  g.beginPath(); g.moveTo(x, y - 4); g.lineTo(x - 11, y + 16); g.lineTo(x + 11, y + 16); g.fill();
+  g.fillStyle = '#ffd9b8'; g.beginPath(); g.arc(x, y - 12, 7, 0, 7); g.fill();   // cabeça
+  g.fillStyle = '#ffd23f'; g.beginPath(); g.arc(x - 1, y - 14, 7, Math.PI, 0.3); g.fill(); // cabelo
+  g.fillStyle = '#333'; g.fillRect(x + 2, y - 13, 2, 2);                          // olho
+  g.strokeStyle = '#fff'; g.lineWidth = 2;                                        // varinha
+  g.beginPath(); g.moveTo(x + 8, y + 2); g.lineTo(x + 20, y - 8); g.stroke();
+  g.fillStyle = '#ffe66d'; g.beginPath(); g.arc(x + 21, y - 9, 4, 0, 7); g.fill();
+}
+
+function desenharElfo(x, y) {
+  const pas = Math.sin(elfo.passo) * 6;                        // pernas correndo (mais rápido com mais doces)
+  g.fillStyle = '#5a3b1c';
+  g.fillRect(x - 7 + pas, y + 14, 6, 12); g.fillRect(x + 1 - pas, y + 14, 6, 12);
+  g.fillStyle = '#2f9e44'; g.fillRect(x - 10, y - 4, 20, 20);                      // túnica verde
+  g.fillStyle = '#ffd9b8'; g.beginPath(); g.arc(x, y - 12, 8, 0, 7); g.fill();     // cabeça
+  g.beginPath(); g.moveTo(x - 8, y - 12); g.lineTo(x - 16, y - 16); g.lineTo(x - 8, y - 8); g.fill();  // orelha
+  g.beginPath(); g.moveTo(x + 8, y - 12); g.lineTo(x + 16, y - 16); g.lineTo(x + 8, y - 8); g.fill();  // orelha
+  g.fillStyle = '#1b6b2f';                                                         // chapéu pontudo
+  g.beginPath(); g.moveTo(x - 9, y - 16); g.lineTo(x + 2, y - 36); g.lineTo(x + 9, y - 16); g.fill();
+  g.fillStyle = '#e0392b'; g.fillRect(x - 9, y - 19, 18, 4);                       // faixa vermelha
+  g.fillStyle = '#222'; g.fillRect(x + 1, y - 13, 3, 3); g.fillRect(x - 5, y - 13, 3, 3);  // olhos
+}
+
+function desenharPlacar() {
+  g.font = 'bold 22px sans-serif'; g.lineWidth = 4; g.strokeStyle = '#2b1b4d';
+  g.textAlign = 'left';
+  g.strokeText('Doces: ' + pontos, 12, 30); g.fillStyle = '#ffe66d'; g.fillText('Doces: ' + pontos, 12, 30);
+  g.textAlign = 'right'; const v = '♥'.repeat(Math.max(vidas, 0));
+  g.strokeText(v, W - 12, 30); g.fillStyle = '#ff5fa8'; g.fillText(v, W - 12, 30);
+}
+
+function desenhar() {
+  g.save();
+  if (tremor > 0) g.translate((Math.random() - 0.5) * 8, (Math.random() - 0.5) * 8);   // tremida
+  desenharFundo();
+  doces.forEach(desenharDoce);
+  desenharBrilhos();
+  desenharElfo(elfo.x, elfo.y);
+  desenharFada(fada.x, fada.y);
+  g.restore();
+  desenharPlacar();
+}
+
+// ---------- Repetição principal (roda o tempo todo) ----------
+function loop(agora) {
+  if (!jogando) return;
+  const f = Math.min((agora - anterior) / 16.67, 3);
+  anterior = agora;
+  atualizar(f);
+  if (jogando) { desenhar(); requestAnimationFrame(loop); }
+  else desenhar();
+}
+
+// Mostra o cenário parado atrás da tela inicial
+zerarDados();
+desenhar();
+</script>
+</body>
+</html>
